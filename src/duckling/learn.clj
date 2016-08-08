@@ -20,6 +20,7 @@
                  (reduce str (map #(-> % :pred meta :grain) time-tokens)))]
     (filter identity [rules grains])))
 
+
 (defn simple-feature-extractor
   "A very simple one to show if it works. Not used for now.
   Takes a token, returns a vector of features
@@ -34,8 +35,22 @@
   (reduce (fn [prior-set tok]
             (sets/union prior-set (subtokens tok))) #{token} (:route token)))
 
+(defn extract-sub-features
+  "Extracts names of previous routes used to produce this route token.
+   This is the feature extractor we use."
+  [token]
+  (let [words (into #{} (:text token))
+        names (->> (:route token)
+                   (remove :latent)
+                   (map #(get-in % [:rule :name]))
+                   (filter identity )
+                   (into words )
+                   )]
+    names))
+
+
 (defn sentence->dataset
-  "Takes a sentence, context, check (fn that determines if a winner is valid), 
+  "Takes a sentence, context, check (fn that determines if a winner is valid),
   feature extractor, and existing dataset.
   Returns an enriched dataset:
   [{<rule-name> [features, output]}]
@@ -96,12 +111,26 @@
 (defn route-prob
   "Computes the _log_ prob for a route."
   [route classifiers]
-  (if-let [classifier (get classifiers (-> route :rule :name))]
-    (let [feat-count (-> route extract-route-features frequencies)
-          [_ prob]   (naive/classify classifier feat-count)]
-      (+ prob
-         (reduce + (map #(route-prob % classifiers) (:route route)))))
-    0))
+  (if (:noprob route)
+    (reduce + (map #(route-prob % classifiers) (:route route)))
+    (if-let [classifier (get classifiers (-> route :rule :name))]
+      (let [feat-count (-> route extract-sub-features frequencies)
+            [cls prob]   (naive/classify classifier feat-count)]
+        (if (or (:noreject route) cls)
+          (+ prob
+             (reduce + (map #(route-prob % classifiers) (:route route))))
+          -1000000 ))
+      0)))
+
+;(defn route-prob
+;  "Computes the _log_ prob for a route."
+;  [route classifiers]
+;    (if-let [classifier (get classifiers (-> route :rule :name))]
+;      (let [feat-count (-> route extract-sub-features frequencies)
+;            [_ prob]   (naive/isTrue? classifier feat-count)]
+;        (+ prob
+;           (reduce + (map #(route-prob % classifiers) (:route route)))))
+;      0))
 
 (defn judge-ml
   "Choose the winning token using a classifier.

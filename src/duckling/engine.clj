@@ -38,9 +38,9 @@
                       (when (clojure.string/blank? word)
                         (throw (ex-info "Zero-length or blank captures forbidden"
                                         {:regex regex :s s})))
-                      {:pos (+ position pos)
-                       :end (+ position pos (count word))
-                       :text word
+                      {:pos    (+ position pos)
+                       :end    (+ position pos (count word))
+                       :text   word
                        :groups groups}))]
       (->> matches
            (filter #(util/separated-substring? s (:pos %) (:end %)))))
@@ -85,15 +85,15 @@
   "Builds a new rule"
   [name pattern production]
   (if (not (string? name)) (throw (Exception. "Can't accept rule without name.")))
-  (let [duckling-helper-ns (the-ns 'duckling.time.prod) ; could split time.patterns and time.prod helpers
+  (let [duckling-helper-ns (the-ns 'duckling.time.prod)     ; could split time.patterns and time.prod helpers
         pattern (binding [*ns* duckling-helper-ns] (eval pattern))
         pattern-vec (if (vector? pattern) pattern [pattern])]
-    {:name name
-     :pattern (map pattern-fn pattern-vec)
+    {:name       name
+     :pattern    (map pattern-fn pattern-vec)
      :production (binding [*ns* duckling-helper-ns]
                    (eval `(fn ~(vec (map #(symbol (str "%" %))
-                                        (range 1 (inc (count pattern-vec)))))
-                                        ~production)))}))
+                                         (range 1 (inc (count pattern-vec)))))
+                            ~production)))}))
 
 (defn rules
   "Parses a set of rules and 'add' them into 'the-rules'.
@@ -112,7 +112,7 @@
   {:pre [(number? position) (map? token) (string? s)]}
   (try
     (if (< (:pos token) position)
-      false ; token starts before position... no chance it's following position
+      false                                                 ; token starts before position... no chance it's following position
       (let [separation (subs s position (:pos token))]
         (re-find #"^[\p{Space}-]*$" separation)))
     (catch Exception e
@@ -131,10 +131,10 @@
                {:text (subs sentence pos end), :pos pos, :end end, :rule rule, :route route}))
       (catch Exception e
         (throw (ex-info (format "Exception duckling@produce span='%s' rule='%s' sentence='%s' ex='%s' stack=%s"
-                                    (subs sentence pos end)
-                                    (:name rule)
-                                    sentence
-                                    e (.printStackTrace e))
+                                (subs sentence pos end)
+                                (:name rule)
+                                sentence
+                                e (.printStackTrace e))
                         {:exception e}))))))
 
 (defn- never-produced?
@@ -145,43 +145,79 @@
   {:pre [stash rule route]}
   (every? #(or (not= rule (:rule %)) (not= route (:route %))) stash))
 
+(defn- purewords?
+  "Check if a token, about to be produced by 'rule' on 'route', is not already in the 'stash'.
+   Two tokens are different if either the rule which produce them, or the route, is different."
+  ;; TODO use signatures for efficiency
+  [stash token]
+  {:pre [stash token]}
+  (letfn [(notsame? [token1 token2]
+          (or
+            (not= (:rule token1) (:rule token2))
+            (and
+              (:pureword token1)
+              (not= (:pureword token1) (:pureword token2)))
+            (not= (:text token1) (:text token2))))]
+    (every? (partial notsame? token) stash)))
+;(every? #(or (not= rule (:rule %)) (not= route (:route %))) stash))
+
 (defn- match
   "Tries to match 'pattern' in the 'stash'.
   Return a seq of routes. A route is a seq of tokens."
   [pattern stash]
   (letfn [(match-recur [pattern first-pattern? stash position route results]
             (if (empty? pattern)
-              (cons route results) ;; add "finished" route to results and return
+              (cons route results)                          ;; add "finished" route to results and return
               (try
                 (apply concat
-                  (for [token ((first pattern) stash position)
-                        :when (or first-pattern? (adjacent? position token stash))]
-                    (match-recur (rest pattern)
-                      false
-                      stash
-                      (:end token)
-                      (conj route token)
-                      results)))
+                       (for [token ((first pattern) stash position)
+                             :when (or first-pattern? (adjacent? position token stash))]
+                         (match-recur (rest pattern)
+                                      false
+                                      stash
+                                      (:end token)
+                                      (conj route token)
+                                      results)))
                 (catch Exception e
                   (.printStackTrace e)
                   (prn stash)
                   (throw (ex-info "Exception @match" {:exception e}))))))]
     (match-recur pattern true stash 0 [] [])))
 
+;(defn- pass-once
+;  "Make one pass of each rule on the stash.
+;  Returns a new stash augmented with the seq of produced tokens."
+;  [stash rules sentence]
+;  (into stash                                               ; we want a vector, not a list, or into changes the order of items
+;        (apply concat
+;               (for [rule rules]
+;                 (try
+;                   (->> (match (:pattern rule) stash)       ; get the routes that match this rule
+;                        (filter (partial never-produced? stash rule)) ; remove what we already have
+;                        (map (fn [route] (produce rule route sentence)))) ; produce
+;                   (catch Exception e
+;                     (throw (Exception. (str "Exception matching rule: "
+;                                             (:name rule) " " e)))))))))
+
 (defn- pass-once
   "Make one pass of each rule on the stash.
   Returns a new stash augmented with the seq of produced tokens."
   [stash rules sentence]
-  (into stash ; we want a vector, not a list, or into changes the order of items
-    (apply concat
-      (for [rule rules]
-        (try
-          (->> (match (:pattern rule) stash) ; get the routes that match this rule
-               (filter (partial never-produced? stash rule)) ; remove what we already have
-               (map (fn [route] (produce rule route sentence)))) ; produce
-          (catch Exception e
-            (throw (Exception. (str "Exception matching rule: "
-                                 (:name rule) " " e)))))))))
+  (let [fullsize (count (:text (first stash)))]
+    (into stash                                               ; we want a vector, not a list, or into changes the order of items
+          (apply concat
+                 (for [rule rules]
+                   (try
+                     (->> (match (:pattern rule) stash)       ; get the routes that match this rule
+                          (filter (partial never-produced? stash rule)) ; remove what we already have
+                          (map (fn [route] (produce rule route sentence))) ; produce
+                          (remove #(when (:matchwhole %) (not= fullsize (- (:end %) (:pos %)))))
+                          (filter (partial purewords? stash)))
+                     (catch Exception e
+                       (throw (Exception. (str "Exception matching rule: "
+                                               (:name rule) " " e)))))))))
+    )
+
 
 (defn pass-all
   "Make as many passes as necessary until no new tokens are produced
@@ -211,7 +247,7 @@
                    (if (:pos token)
                      (- (:end token) (:pos token))
                      0))
-    stash))
+         stash))
 
 (defn resolve-token
   "Resolve a token based on its dimension, predicate, and the context.
